@@ -71,7 +71,7 @@ class EMUSftTokenizer(EMUImageOnlyTokenizer):
         self,
         messages: List[Dict[str, Any]],
         image: Any = None
-    ) -> torch.Tensor:
+    ) -> Dict[str, torch.Tensor]:
         """
         Tokenize a conversation with a single image and text.
         Uses parallel processing: text on CPU, image on GPU.
@@ -82,7 +82,10 @@ class EMUSftTokenizer(EMUImageOnlyTokenizer):
             image: Single PIL image corresponding to <|image|> placeholder
 
         Returns:
-            Token tensor with <|image|> placeholder replaced by Emu3 vision tokens
+            Dictionary with keys:
+            - "text": Concatenated text tokens (before + after image, excluding placeholder)
+            - "image": Image tokens (without BOS/EOS)
+            - "metadata": Dict with text split information and image position
         """
         def tokenize_text_cpu():
             """CPU thread for text tokenization."""
@@ -130,17 +133,25 @@ class EMUSftTokenizer(EMUImageOnlyTokenizer):
 
         image_tokens = image_future.result()
 
-        # Move text tokens to same device as image tokens for final assembly
+        # Move text tokens to same device as image tokens
         text_tokens = text_tokens.to(image_tokens.device)
 
-        # Replace <|image|> placeholder with actual vision tokens
-        final_tokens = self._replace_single_image(
-            text_tokens,
-            image_position,
-            image_tokens
-        )
+        # Extract text before and after image placeholder
+        text_before = text_tokens[:image_position] if image_position > 0 else torch.tensor([], dtype=torch.long, device=text_tokens.device)
+        text_after = text_tokens[image_position + 1:] if image_position + 1 < len(text_tokens) else torch.tensor([], dtype=torch.long, device=text_tokens.device)
 
-        return final_tokens
+        # Concatenate text sequences (removes image placeholder, preserves order)
+        combined_text = torch.cat([text_before, text_after]) if text_before.numel() > 0 or text_after.numel() > 0 else torch.tensor([], dtype=torch.long, device=text_tokens.device)
+
+        return {
+            "text": combined_text,
+            "image": image_tokens,  # Already stripped of BOS/EOS (line 121)
+            "metadata": {
+                "text_before_len": len(text_before),
+                "text_after_len": len(text_after),
+                "image_position": image_position
+            }
+        }
 
     def _replace_single_image(
         self,
@@ -213,7 +224,7 @@ class EMUSftTokenizer(EMUImageOnlyTokenizer):
 
         return messages
 
-    def tokenize(self, image, text) -> torch.Tensor:
+    def tokenize(self, image, text) -> Dict[str, torch.Tensor]:
         """
         Unified tokenization interface for SFT mode.
 
@@ -222,7 +233,7 @@ class EMUSftTokenizer(EMUImageOnlyTokenizer):
             text: List of {"user": str, "assistant": str} conversation dicts
 
         Returns:
-            Tokenized tensor ready for model input
+            Dictionary with separated text and image tokens
         """
         # Convert conversation format to messages
         messages = self._format_to_messages(text)

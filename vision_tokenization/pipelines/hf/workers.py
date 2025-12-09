@@ -118,7 +118,7 @@ class Worker(BaseTokenizerWorker):
 
     def process_shard(self, shard_id: int, dataset_info: Dict, num_shards: int) -> Dict:
         """
-        Process a complete shard and save to a separate output file.
+        Process a complete shard and save to separate text/image files.
 
         Args:
             shard_id: Index of the shard to process
@@ -143,14 +143,35 @@ class Worker(BaseTokenizerWorker):
         # Get this specific shard
         shard = dataset.shard(num_shards=num_shards, index=shard_id)
 
-        # Create per-shard output file with total shards in filename
+        # Setup output paths with subdirectories
         from vision_tokenization.pipelines.indexed_dataset_megatron import DType, IndexedDatasetBuilder
         from pathlib import Path
 
-        shard_output_path = Path(self.output_dir) / f"rank_{self.worker_id}_shard_{shard_id}_{num_shards}"
-        builder = IndexedDatasetBuilder(
-            f"{shard_output_path}.bin",
-            dtype=DType.optimal_dtype(len(self.tokenizer.text_tokenizer))
+        output_base = Path(self.output_dir)
+        shard_filename = f"rank_{self.worker_id}_shard_{shard_id}_{num_shards}"
+
+        # Create subdirectories for text and image
+        text_dir = output_base / "text"
+        image_dir = output_base / "image"
+
+        # Create directories (only text if not image_only mode)
+        if self.mode != "image_only":
+            text_dir.mkdir(parents=True, exist_ok=True)
+        image_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create builders for both modalities
+        dtype = DType.optimal_dtype(len(self.tokenizer.text_tokenizer))
+
+        text_builder = None
+        if self.mode != "image_only":
+            text_builder = IndexedDatasetBuilder(
+                str(text_dir / f"{shard_filename}.bin"),
+                dtype=dtype
+            )
+
+        image_builder = IndexedDatasetBuilder(
+            str(image_dir / f"{shard_filename}.bin"),
+            dtype=dtype
         )
 
         # Process all samples in the shard
@@ -178,39 +199,55 @@ class Worker(BaseTokenizerWorker):
                 stats['skipped'] += 1
                 continue
 
-            # Tokenize and save
+            # Tokenize
             try:
-                tokens_np = self.tokenize_sample(image, text)
-                if tokens_np is not None:
-                    builder.add_document(tokens_np, [len(tokens_np)])
-                    stats['samples'] += 1
-                    stats['tokens'] += len(tokens_np)
-
-                    # Count image vs text tokens for SFT mode
-                    if self.mode == "sft" and self.img_end_id is not None:
-                        import torch
-                        if torch.is_tensor(tokens_np):
-                            tokens_list = tokens_np.cpu().numpy().tolist()
-                        else:
-                            tokens_list = tokens_np.tolist()
-
-                        if self.img_end_id in tokens_list:
-                            img_end_idx = tokens_list.index(self.img_end_id)
-                            stats['image_tokens'] += img_end_idx + 1
-                            stats['text_tokens'] += len(tokens_list) - (img_end_idx + 1)
-                else:
+                result = self.tokenize_sample(image, text)
+                if result is None:
                     stats['errors'] += 1
+                    continue
+
+                # Extract components
+                text_tokens = result.get("text")
+                image_tokens = result.get("image")
+                metadata = result.get("metadata", {})
+
+                # Validate we have image tokens (always required)
+                if image_tokens is None or len(image_tokens) == 0:
+                    self.logger.warning("No image tokens generated, skipping sample")
+                    stats['errors'] += 1
+                    continue
+
+                # Write text tokens (with empty document for alignment if needed)
+                if text_builder is not None:
+                    if text_tokens is not None and len(text_tokens) > 0:
+                        text_builder.add_document(text_tokens, [len(text_tokens)])
+                        stats['text_tokens'] += len(text_tokens)
+                    else:
+                        # Add empty document to maintain alignment with image
+                        text_builder.add_document([], [0])
+
+                # Write image tokens (always)
+                image_builder.add_document(image_tokens, [len(image_tokens)])
+                stats['image_tokens'] += len(image_tokens)
+
+                # Update overall stats
+                stats['samples'] += 1
+                stats['tokens'] += (len(text_tokens) if text_tokens is not None else 0) + len(image_tokens)
+
             except Exception as e:
                 self.logger.warning(f"Failed to process sample: {e}")
                 stats['errors'] += 1
 
-        # Finalize the shard file
-        builder.finalize(f"{shard_output_path}.idx")
+        # Finalize both builders
+        if text_builder is not None:
+            text_builder.finalize(str(text_dir / f"{shard_filename}.idx"))
+        image_builder.finalize(str(image_dir / f"{shard_filename}.idx"))
 
         elapsed = time.time() - start_time
         self.logger.info(
             f"Completed shard {shard_id}: {stats['samples']} samples, "
-            f"{stats['tokens']} tokens in {elapsed:.1f}s"
+            f"{stats['tokens']} tokens ({stats['text_tokens']} text, {stats['image_tokens']} image) "
+            f"in {elapsed:.1f}s"
         )
 
         return {

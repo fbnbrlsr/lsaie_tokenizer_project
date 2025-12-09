@@ -96,6 +96,31 @@ python tokenize.py hf \
 - **`text2image`** - Text prompt followed by single image
 - **`sft`** - Supervised fine-tuning with conversations (single image + text)
 
+## Token Separation Architecture
+
+The pipeline stores **text and image tokens separately** in independent `.bin/.idx` file pairs. This design enables:
+
+### Benefits
+
+- **Easy Tokenizer Switching**: Replace text tokenizer without re-tokenizing images
+- **Chat Template Updates**: Change chat templates by only re-processing text tokens
+- **Modality-Specific Processing**: Apply different post-processing to text vs image tokens
+- **Storage Flexibility**: Store text and image tokens on different storage tiers if needed
+
+### How It Works
+
+1. **Tokenization**: The tokenizer returns a dictionary with separate `text` and `image` tensors
+2. **Storage**: Two `IndexedDatasetBuilder` instances write to `text/` and `image/` subdirectories
+3. **Alignment**: Document N in text files corresponds to document N in image files (maintained via empty documents when needed)
+4. **Special Tokens**: All special tokens (BOS, EOS, img_start, img_end, etc.) are stored with image tokens
+
+### SFT Mode Specifics
+
+For SFT mode, text tokens are split around the `<|image|>` placeholder:
+- Text before and after the image are concatenated into a single sequence
+- Metadata stores the split lengths for reconstruction during training
+- This enables flexible positioning of images within conversations
+
 ## Configuration Options
 
 ### Common Arguments
@@ -201,35 +226,62 @@ CLI arguments override config file values.
 
 ## Output Format
 
-The pipeline creates Megatron-LM IndexedDataset format with shard-based files:
+The pipeline creates Megatron-LM IndexedDataset format with **separated text and image storage**. Text and image tokens are stored in separate subdirectories with matching shard filenames:
+
+### For image2text, text2image, and sft modes:
 
 ```
 output_dir/
-└── config_name/
-    ├── rank_0_shard_3_32.bin   # Binary token data (worker 0, shard 3 of 32 total)
-    ├── rank_0_shard_3_32.idx   # Index for random access
-    ├── rank_0_shard_4_32.bin   # Binary token data (worker 0, shard 4 of 32 total)
-    ├── rank_0_shard_4_32.idx
-    ├── rank_1_shard_8_32.bin   # Binary token data (worker 1, shard 8 of 32 total)
-    ├── rank_1_shard_8_32.idx
-    ├── rank_2_shard_16_32.bin  # Binary token data (worker 2, shard 16 of 32 total)
-    ├── rank_2_shard_16_32.idx
-    └── dataset_info.json       # Processing metadata (written after completion)
+└── config_name_{mode}/
+    ├── text/
+    │   ├── rank_0_shard_0_32.bin   # Text tokens only
+    │   ├── rank_0_shard_0_32.idx   # Text index
+    │   ├── rank_0_shard_1_32.bin
+    │   ├── rank_0_shard_1_32.idx
+    │   └── ...
+    ├── image/
+    │   ├── rank_0_shard_0_32.bin   # Image tokens only (with special tokens)
+    │   ├── rank_0_shard_0_32.idx   # Image index
+    │   ├── rank_0_shard_1_32.bin
+    │   ├── rank_0_shard_1_32.idx
+    │   └── ...
+    └── dataset_info.json           # Processing metadata
 ```
 
-The filename format `rank_{worker}_shard_{id}_{total}` enables:
-- **Atomic checkpointing**: Each shard is saved independently
-- **Easy resume**: The total shard count is embedded in filenames
-- **Clear tracking**: You can see progress at a glance
+### For image_only mode:
+
+```
+output_dir/
+└── config_name_image_only/
+    ├── image/
+    │   ├── rank_0_shard_0_32.bin   # Image tokens only
+    │   ├── rank_0_shard_0_32.idx
+    │   └── ...
+    └── dataset_info.json
+```
+
+**Note**: In image_only mode, no `text/` directory is created since there are no text tokens.
+
+### Key Features:
+
+- **Separated Storage**: Text and image tokens are stored independently, enabling easy tokenizer/chat template switching
+- **Document Alignment**: Document N in text files corresponds to document N in image files (maintained via empty documents when needed)
+- **Special Token Handling**: All special tokens (BOS, EOS, img_start, img_end, etc.) are stored with image tokens to preserve encapsulation
+- **Atomic Checkpointing**: Each shard is saved independently with both text and image files
+- **Easy Resume**: The total shard count is embedded in filenames
+- **Clear Tracking**: You can see progress at a glance
+
+The filename format `rank_{worker}_shard_{id}_{total}` enables efficient distributed processing and checkpointing.
 
 ## Checkpoint and Resume
 
 ### How It Works
 
-1. Each shard saves to `rank_{worker}_shard_{id}_{total}.bin` and `.idx`
-2. The `.idx` file marks completion (written last)
-3. Resume detects completed shards by checking for `.idx` files
-4. Only uncompleted shards are reprocessed
+1. Each shard saves to both `text/rank_{worker}_shard_{id}_{total}.bin/.idx` and `image/rank_{worker}_shard_{id}_{total}.bin/.idx`
+2. The `.idx` files mark completion (written last)
+3. For non-image_only modes: Resume detects completed shards by checking for **BOTH** text and image `.idx` files
+4. For image_only mode: Resume checks only image `.idx` files
+5. Only uncompleted shards are reprocessed
 
 ### Resume Usage
 
@@ -243,8 +295,13 @@ python tokenize.py hf --config config.json --resume
 
 ### Edge Cases
 
-**Incomplete shards** (`.bin` without `.idx`):
-- Automatically overwritten when reprocessed
+**Incomplete shards** (only text OR only image files exist):
+- Logged as warnings during resume
+- Automatically reprocessed to create both files
+
+**Missing text directory** (for non-image_only modes):
+- Resume will not find any completed shards
+- All shards will be processed from scratch
 
 **Inconsistent shard counts**:
 - Program stops with error if existing files have different total shards

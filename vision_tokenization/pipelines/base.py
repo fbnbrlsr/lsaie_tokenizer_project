@@ -288,7 +288,7 @@ class BaseTokenizerWorker:
 
         return 'ok'
 
-    def tokenize_sample(self, image, text) -> Optional[Any]:
+    def tokenize_sample(self, image, text) -> Optional[Dict[str, Any]]:
         """
         Tokenize a single sample (shared logic).
 
@@ -297,18 +297,48 @@ class BaseTokenizerWorker:
             text: Input text (may be None for image-only mode)
 
         Returns:
-            Tokens (as tensor or numpy array), or None if error
+            Dict with keys:
+            - "text": numpy array or None
+            - "image": numpy array
+            - "metadata": dict with additional info
+            Returns None if error occurs
         """
         try:
             import torch
 
-            # Use unified tokenize method
-            tokens = self.tokenizer.tokenize(image, text)
+            # Call tokenizer
+            result = self.tokenizer.tokenize(image, text)
 
-            # Convert to numpy if needed
-            tokens_np = tokens.cpu().numpy() if torch.is_tensor(tokens) else tokens
+            # Handle image_only mode (returns tensor, not dict)
+            if self.mode == "image_only":
+                if torch.is_tensor(result):
+                    tokens_np = result.cpu().numpy()
+                else:
+                    tokens_np = result
+                return {
+                    "text": None,
+                    "image": tokens_np,
+                    "metadata": {}
+                }
 
-            return tokens_np
+            # Handle other modes (returns dict)
+            output = {
+                "text": None,
+                "image": None,
+                "metadata": result.get("metadata", {})
+            }
+
+            # Convert text tokens to numpy
+            if result.get("text") is not None:
+                text_tokens = result["text"]
+                output["text"] = text_tokens.cpu().numpy() if torch.is_tensor(text_tokens) else text_tokens
+
+            # Convert image tokens to numpy
+            if result.get("image") is not None:
+                image_tokens = result["image"]
+                output["image"] = image_tokens.cpu().numpy() if torch.is_tensor(image_tokens) else image_tokens
+
+            return output
 
         except Exception as e:
             self.logger.warning(f"Error processing sample: {e}")

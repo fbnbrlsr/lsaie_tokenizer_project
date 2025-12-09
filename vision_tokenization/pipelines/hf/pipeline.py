@@ -94,7 +94,12 @@ class HFDatasetPipeline(BasePipeline):
             self.num_shards = self.num_gpus
 
     def _get_completed_shards(self) -> set:
-        """Get list of already completed shards by checking for .idx files."""
+        """
+        Get list of already completed shards by checking for .idx files.
+
+        For separated storage, a shard is complete only if BOTH
+        text and image .idx files exist (except for image_only mode).
+        """
         from pathlib import Path
         import re
         import sys
@@ -105,50 +110,67 @@ class HFDatasetPipeline(BasePipeline):
         if not output_path.exists():
             return completed
 
+        # Check for new directory structure (text/ and image/ subdirectories)
+        image_dir = output_path / "image"
+        text_dir = output_path / "text"
+
+        # Validate directory structure
+        if not image_dir.exists():
+            self.logger.info("No existing shards found (no image directory)")
+            return completed
+
+        if self.mode != "image_only" and not text_dir.exists():
+            self.logger.info("No existing shards found (no text directory)")
+            return completed
+
         # Pattern: rank_X_shard_Y_Z.idx where Y is shard_id and Z is total_shards
         pattern = re.compile(r'rank_\d+_shard_(\d+)_(\d+)\.idx')
 
-        # Collect all shard counts found
-        shard_counts_found = set()
-        files_by_shard_count = {}
-
-        for idx_file in output_path.glob('*.idx'):
+        # Find completed image shards
+        image_shards = {}  # shard_id -> total_shards
+        for idx_file in image_dir.glob('*.idx'):
             match = pattern.match(idx_file.name)
             if match:
                 shard_id = int(match.group(1))
                 total_shards = int(match.group(2))
-
-                shard_counts_found.add(total_shards)
-                if total_shards not in files_by_shard_count:
-                    files_by_shard_count[total_shards] = []
-                files_by_shard_count[total_shards].append(idx_file.name)
-
                 if total_shards == self.num_shards:
-                    completed.add(shard_id)
+                    image_shards[shard_id] = total_shards
 
-        # Check for inconsistency
-        if shard_counts_found and self.num_shards not in shard_counts_found:
-            # No files match the expected shard count
-            self.logger.error(
-                f"ERROR: No existing shards match expected count ({self.num_shards}). "
-                f"Found shard counts: {sorted(shard_counts_found)}"
-            )
-            for count in sorted(shard_counts_found):
-                self.logger.error(f"  {count} total shards: {len(files_by_shard_count[count])} files")
-            self.logger.error(
-                f"To resume, use --num-shards {sorted(shard_counts_found)[0]} or start fresh without --resume"
-            )
-            sys.exit(1)
+        # For image_only mode, image shards alone are sufficient
+        if self.mode == "image_only":
+            completed = set(image_shards.keys())
+            if completed:
+                self.logger.info(f"Found {len(completed)} existing image-only shards to resume from")
+            return completed
 
-        if len(shard_counts_found) > 1:
-            # Multiple different shard counts found
-            self.logger.error(
-                f"ERROR: Inconsistent total shard counts found: {sorted(shard_counts_found)}"
+        # For other modes, find text shards and intersect
+        text_shards = {}  # shard_id -> total_shards
+        for idx_file in text_dir.glob('*.idx'):
+            match = pattern.match(idx_file.name)
+            if match:
+                shard_id = int(match.group(1))
+                total_shards = int(match.group(2))
+                if total_shards == self.num_shards:
+                    text_shards[shard_id] = total_shards
+
+        # A shard is complete only if both text and image exist
+        completed = set(image_shards.keys()) & set(text_shards.keys())
+
+        # Warn about incomplete shards
+        image_only_shards = set(image_shards.keys()) - text_shards.keys()
+        text_only_shards = set(text_shards.keys()) - image_shards.keys()
+
+        if image_only_shards:
+            self.logger.warning(
+                f"Found {len(image_only_shards)} shards with only image files (incomplete): {sorted(image_only_shards)}"
             )
-            for count in sorted(shard_counts_found):
-                self.logger.error(f"  {count} total shards: {len(files_by_shard_count[count])} files")
-            self.logger.error("Clean the output directory or use a different output path")
-            sys.exit(1)
+        if text_only_shards:
+            self.logger.warning(
+                f"Found {len(text_only_shards)} shards with only text files (incomplete): {sorted(text_only_shards)}"
+            )
+
+        if completed:
+            self.logger.info(f"Found {len(completed)} complete shards to resume from")
 
         return completed
 

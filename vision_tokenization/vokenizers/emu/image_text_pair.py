@@ -4,6 +4,7 @@ EMU tokenizer for image-text pairs with parallel GPU/CPU processing.
 """
 
 import torch
+from typing import Dict
 from concurrent.futures import ThreadPoolExecutor
 from .image_only import EMUImageOnlyTokenizer
 
@@ -24,7 +25,7 @@ class EMUImageTextPairTokenizer(EMUImageOnlyTokenizer):
         self,
         image,
         text: str,
-    ) -> torch.Tensor:
+    ) -> Dict[str, torch.Tensor]:
         """
         Tokenize an image-text pair with parallel processing using ThreadPoolExecutor.
         Image is processed on GPU while text is processed on CPU simultaneously.
@@ -34,7 +35,10 @@ class EMUImageTextPairTokenizer(EMUImageOnlyTokenizer):
             text: Text string to append after image
 
         Returns:
-            Combined tokens: [BOS] + [image tokens without EOS] + [text tokens] + [EOS]
+            Dictionary with keys:
+            - "text": Text tokens (no special tokens)
+            - "image": Image tokens with all special tokens (BOS, img_start, img_end, EOS)
+            - "metadata": Dict with mode and token counts
         """
         def tokenize_text_cpu():
             """CPU thread for text tokenization."""
@@ -59,30 +63,22 @@ class EMUImageTextPairTokenizer(EMUImageOnlyTokenizer):
         image_tokens = image_future.result()
         text_tokens = text_future.result()
 
-        # Move text tokens to same device as image tokens for concatenation
+        # Move text tokens to same device as image tokens
         text_tokens = text_tokens.to(image_tokens.device)
 
-        # Combine based on mode
-        if self.mode == "text2image":
-            # Text first, then image
-            combined_tokens = torch.cat([
-                image_tokens[:1],   # BOS token
-                text_tokens,        # Text tokens
-                image_tokens[1:]    # Image tokens (including EOS)
-            ])
-        elif self.mode == "image2text":
-            # Image first, then text
-            combined_tokens = torch.cat([
-                image_tokens[:-1],  # Image tokens without EOS
-                text_tokens,        # Text tokens
-                image_tokens[-1:]   # EOS token
-            ])
-        else:
-            raise ValueError(f"Invalid mode for image_text_pair tokenizer: {self.mode}")
+        # Return separated tokens as dictionary
+        # Image tokens contain full structure: BOS, img_start, img_end, EOS
+        return {
+            "text": text_tokens,
+            "image": image_tokens,
+            "metadata": {
+                "mode": self.mode,
+                "image_token_count": len(image_tokens),
+                "text_token_count": len(text_tokens)
+            }
+        }
 
-        return combined_tokens
-
-    def tokenize(self, image, text) -> torch.Tensor:
+    def tokenize(self, image, text) -> Dict[str, torch.Tensor]:
         """
         Unified tokenization interface for image-text pair mode.
 
@@ -91,7 +87,7 @@ class EMUImageTextPairTokenizer(EMUImageOnlyTokenizer):
             text: Text string to append after image (required)
 
         Returns:
-            Combined tokenized output as tensor
+            Dictionary with separated text and image tokens
         """
         # Both image and text are required for image-text pair tokenizer
         return self.tokenize_image_text_pair(image, text)

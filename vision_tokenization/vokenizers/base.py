@@ -4,7 +4,7 @@ Base tokenizer class for unified tokenization interface.
 """
 
 from abc import ABC, abstractmethod
-from typing import Optional, Union
+from typing import Optional, Union, Dict
 import torch
 
 
@@ -17,28 +17,29 @@ class BaseTokenizer(ABC):
     """
 
     @abstractmethod
-    def tokenize(self, image=None, text=None) -> Union[torch.Tensor, list]:
+    def tokenize(self, image=None, text=None) -> Union[torch.Tensor, Dict[str, torch.Tensor]]:
         """
         Unified tokenization interface.
 
         Different tokenizer implementations have different requirements:
-        - Image-only: image is required, text is ignored
-        - Image-text pair: both image and text are required
-        - SFT: at least one of image or text is required
+        - Image-only: image is required, text is ignored (returns torch.Tensor)
+        - Image-text pair: both image and text are required (returns Dict)
+        - SFT: at least one of image or text is required (returns Dict)
 
         Args:
             image: Input image (PIL Image or similar)
             text: Input text (str or list for conversations)
 
         Returns:
-            Tokenized output as tensor or list of token IDs
+            - For image_only mode: torch.Tensor
+            - For other modes: Dict with keys {"text": torch.Tensor, "image": torch.Tensor, "metadata": Dict}
 
         Raises:
             ValueError: If required inputs are missing for the tokenizer mode
         """
         pass
 
-    def __call__(self, image=None, text=None) -> Union[torch.Tensor, list]:
+    def __call__(self, image=None, text=None) -> Union[torch.Tensor, Dict[str, torch.Tensor]]:
         """
         Allow tokenizer to be called directly.
 
