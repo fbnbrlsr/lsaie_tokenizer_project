@@ -1,0 +1,13 @@
+{
+  "dataset_name": "jmhessel/newyorker_caption_contest",
+  "config_name": "explanation",
+  "dataset_split": "train[:2000]",
+  "mode": "image2text",
+  "tokenizer_path": "/users/fbrulisauer/scratch/ApertusProject/lsaie_tokenizer_project/my_omni_tokenizer",
+  "output_dir": "/users/fbrulisauer/scratch/ApertusProject/lsaie_tokenizer_project/my_tokenized_data_output",
+  "num_gpus": 2,
+  "num_shards": 10,
+  "device": "cuda",
+  "image_field": "image",
+  "text_field": "image_description"
+}

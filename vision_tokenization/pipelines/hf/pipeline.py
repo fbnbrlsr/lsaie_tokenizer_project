@@ -40,6 +40,7 @@ class HFDatasetPipeline(BasePipeline):
         **kwargs
     ):
         super().__init__(tokenizer_path, output_dir, num_gpus, device, **kwargs)
+        
 
         self.dataset_name = dataset_name
         self.dataset_split = dataset_split
@@ -79,6 +80,7 @@ class HFDatasetPipeline(BasePipeline):
         self.image_field = image_field
         self.text_field = text_field
         self.resume = resume
+        
 
         # Validate mode
         valid_modes = ["image_only", "image2text", "text2image", "sft"]
@@ -180,7 +182,16 @@ class HFDatasetPipeline(BasePipeline):
 
         # Initialize Ray with GPU support
         if not ray.is_initialized():
-            ray.init(num_cpus=self.num_gpus + 2, num_gpus=self.num_gpus)
+            ray.init(
+                num_cpus=self.num_gpus + 2, 
+                num_gpus=self.num_gpus,
+                runtime_env={
+                    "working_dir": ".",
+                    "py_modules": [
+                        "/users/fbrulisauer/scratch/ApertusProject/lsaie_tokenizer_project/vision_tokenization",
+                        "/users/fbrulisauer/scratch/ApertusProject/lsaie_tokenizer_project/Tokenizer"
+                    ]
+                })
 
         # Load dataset
         config_info = f" (config: {self.config_name})" if self.config_name else ""

@@ -166,6 +166,9 @@ class IndexedDatasetBuilder:
         self.sequence_lengths = []
         self.document_indices = [0]
         self.sequence_modes = [] if self.multimodal else None
+        
+    def __len__(self) -> int:
+        return len(self.sequence_lengths)
 
     def add_item(self, tensor: torch.Tensor, mode: int = 0) -> None:
         """Add a single item to the dataset

@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """
 Main entry point for vision tokenization.
+Unified interface for different tokenization pipelines.
 
-This script provides a unified interface for different tokenization pipelines.
+Args and Config precedences:
+    - defaults < json config file < CLI args
 
 Usage:
     # Using configuration file (recommended)
@@ -32,228 +34,214 @@ def setup_logging(verbose: bool = False):
     """Setup logging configuration."""
     level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(
-        level=level,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
+        level=level, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
     )
 
 
 def create_hf_parser(subparsers):
     """Create parser for HuggingFace datasets."""
-    parser = subparsers.add_parser(
-        'hf',
-        help='Tokenize HuggingFace datasets'
-    )
+    parser = subparsers.add_parser("hf", help="Tokenize HuggingFace datasets")
 
+    parser.add_argument("--config", type=str, help="Path to JSON configuration file")
+    parser.add_argument("--dataset-name", type=str, required=False, help="HuggingFace dataset name")
+    parser.add_argument("--dataset-split", type=str, required=False, help="Dataset split to process")
     parser.add_argument(
-        '--config',
+        "--mode",
         type=str,
-        help='Path to JSON configuration file'
-    )
-    parser.add_argument(
-        '--dataset-name',
-        type=str,
+        choices=["image_only", "image2text", "text2image", "sft"],
         required=False,
-        help='HuggingFace dataset name'
+        help="Tokenization mode",
     )
+    parser.add_argument("--config-name", type=str, help="Dataset configuration/subset name (e.g., for FineVision)")
+    parser.add_argument("--cache-dir", type=str, help="Cache directory for downloaded datasets")
+    parser.add_argument("--num-proc", type=int, help="Number of processes for dataset loading")
+    parser.add_argument("--max-samples", type=int, help="Maximum number of samples to process")
     parser.add_argument(
-        '--dataset-split',
+        "--num-shards", type=int, help="Number of shards for distributed processing and checkpointing (required)"
+    )
+    parser.add_argument("--image-field", type=str, default="images", help="Name of image field in dataset")
+    parser.add_argument(
+        "--text-field",
         type=str,
-        required=False,
-        help='Dataset split to process'
+        default="texts",
+        help="Name of text field in dataset (for image_text_pair and SFT modes)",
     )
     parser.add_argument(
-        '--mode',
+        "--resume", action="store_true", help="Resume from existing checkpoint by skipping completed shards"
+    )
+    parser.add_argument(
+        "--image-transforms",
         type=str,
-        choices=['image_only', 'image2text', 'text2image', 'sft'],
-        required=False,
-        help='Tokenization mode'
+        help='Comma-separated list of image transforms to apply (e.g., "convert_rgb,resize_max")',
     )
     parser.add_argument(
-        '--config-name',
+        "--text-transforms",
         type=str,
-        help='Dataset configuration/subset name (e.g., for FineVision)'
+        help='Comma-separated list of text transforms to apply (e.g., "strip_whitespace")',
     )
     parser.add_argument(
-        '--cache-dir',
+        "--dataset-load-method",
         type=str,
-        help='Cache directory for downloaded datasets'
+        choices=["default", "builder_load"],
+        default="default",
+        help=(
+            "Method for loading HuggingFace datasets. "
+            '"default": use load_dataset() (requires HF hub cache). '
+            '"builder_load": use load_dataset_builder().as_dataset() '
+            "(requires pre-prepared dataset, no hub cache needed)"
+        ),
     )
     parser.add_argument(
-        '--num-proc',
-        type=int,
-        help='Number of processes for dataset loading'
-    )
-    parser.add_argument(
-        '--max-samples',
-        type=int,
-        help='Maximum number of samples to process'
-    )
-    parser.add_argument(
-        '--num-shards',
-        type=int,
-        help='Number of shards for distributed processing and checkpointing (required)'
-    )
-    parser.add_argument(
-        '--image-field',
+        "--conversation-transform",
         type=str,
-        default='images',
-        help='Name of image field in dataset'
+        help=(
+            "(Optional!) Conversation transform to apply in SFT tokenizer worker. Conversation transforms are applied "
+            "to conversation structure of a dataset, to convert to a format that is compatible with tokenizer chat template."
+        ),
     )
     parser.add_argument(
-        '--text-field',
-        type=str,
-        default='texts',
-        help='Name of text field in dataset (for image_text_pair and SFT modes)'
+        "--dataset-streamed", action="store_true", help="If set, and a HF dataset is loaded with mode 'load_dataset'"
     )
-    parser.add_argument(
-        '--resume',
-        action='store_true',
-        help='Resume from existing checkpoint by skipping completed shards'
-    )
-
     return parser
 
 
 def create_wds_parser(subparsers):
     """Create parser for WebDataset."""
-    parser = subparsers.add_parser(
-        'wds',
-        help='Tokenize WebDataset format'
-    )
+    parser = subparsers.add_parser("wds", help="Tokenize WebDataset format")
 
     parser.add_argument(
-        '--input-pattern',
+        "--input-pattern",
         type=str,
         required=False,
-        help='Pattern for input webdataset files (e.g., "data_{000..100}.tar")'
+        help='Pattern for input webdataset files (e.g., "data_{000..100}.tar")',
     )
     parser.add_argument(
-        '--mode',
+        "--mode",
         type=str,
-        choices=['image_only', 'image_text_pair', 'sft'],
-        default='image_text_pair',
-        help='Tokenization mode'
+        choices=["image_only", "image_text_pair", "sft"],
+        default="image_text_pair",
+        help="Tokenization mode",
     )
-    parser.add_argument(
-        '--batch-size',
-        type=int,
-        default=64,
-        help='Batch size for processing'
-    )
+    parser.add_argument("--batch-size", type=int, default=64, help="Batch size for processing")
 
     return parser
 
 
-def main():
-    """Main entry point."""
+def parse_args():
+    """Main entry point for parsing CLI arguments."""
     parser = argparse.ArgumentParser(
-        description='Vision Tokenization Pipeline',
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+        description="Vision Tokenization Pipeline", formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
 
     # Common arguments
+    parser.add_argument("--tokenizer-path", type=str, required=False, help="Path to the tokenizer")
+    parser.add_argument("--output-dir", type=str, required=False, help="Output directory for tokenized data")
     parser.add_argument(
-        '--tokenizer-path',
-        type=str,
-        required=False,
-        help='Path to the tokenizer'
-    )
-    parser.add_argument(
-        '--output-dir',
-        type=str,
-        required=False,
-        help='Output directory for tokenized data'
-    )
-    parser.add_argument(
-        '--num-gpus',
+        "--num-gpus",
         type=int,
         required=False,
-        help='Number of GPUs for tokenization'
+        help="Number of GPUs for tokenization. In a multinode setup this should be the number of GPUs per node.",
     )
+    parser.add_argument("--device", type=str, required=False, choices=["cuda", "cpu"], help="Device for tokenization")
     parser.add_argument(
-        '--device',
-        type=str,
-        required=False,
-        choices=['cuda', 'cpu'],
-        help='Device for tokenization'
-    )
-    parser.add_argument(
-        '--min-tokenizer-pixels',
+        "--min-tokenizer-pixels",
         type=parse_resolution,
-        help='Minimum pixels for tokenizer preprocessing (e.g., "384*384" or "147456")'
+        help='Minimum pixels for tokenizer preprocessing (e.g., "384*384" or "147456")',
     )
     parser.add_argument(
-        '--max-tokenizer-pixels',
+        "--max-tokenizer-pixels",
         type=parse_resolution,
-        help='Maximum pixels for tokenizer preprocessing (e.g., "1024*1024" or "1048576")'
+        help='Maximum pixels for tokenizer preprocessing (e.g., "1024*1024" or "1048576")',
     )
     parser.add_argument(
-        '--min-image-pixels',
-        type=parse_resolution,
-        help='Minimum pixels to filter images (e.g., "256*256")'
+        "--min-image-pixels", type=parse_resolution, help='Minimum pixels to filter images (e.g., "256*256")'
     )
     parser.add_argument(
-        '--max-image-pixels',
-        type=parse_resolution,
-        help='Maximum pixels to filter images (e.g., "2048*2048")'
+        "--max-image-pixels", type=parse_resolution, help='Maximum pixels to filter images (e.g., "2048*2048")'
     )
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
     parser.add_argument(
-        '--verbose',
-        action='store_true',
-        help='Enable verbose logging'
+        "--log-interval",
+        type=int,
+        default=1000,
+        help="Log progress every N samples when output is piped to file (default: 1000, 0 = log every batch)",
     )
 
     # Subparsers for different data formats
-    subparsers = parser.add_subparsers(
-        dest='data_format',
-        help='Data format to process',
-        required=True
-    )
+    subparsers = parser.add_subparsers(dest="data_format", help="Data format to process", required=True)
 
     # Add format-specific parsers
     create_hf_parser(subparsers)
     # TODO: Add WebDataset parser when implemented
     # create_wds_parser(subparsers)
 
-    args = parser.parse_args()
+    return parser.parse_args(), parser
+
+
+def get_defaults(parser, data_format):
+    """Get defaults for a subparser by parsing minimal required args."""
+    defaults, _ = parser.parse_known_args([data_format])
+    return defaults
+
+
+def main():
+    """Main entry point."""
+    args, parser = parse_args()
     setup_logging(args.verbose)
     logger = logging.getLogger(__name__)
 
-    # Load config file or use CLI args
+    defaults = vars(get_defaults(parser, args.data_format))
+
+    # Build config container from args
+    config = vars(args).copy()
+
+    # Load config file if exists.
     if args.config:
         logger.info(f"Loading config from {args.config}")
         with open(args.config) as f:
-            config = json.load(f)
+            json_config = json.load(f)
+        logger.info(f"Config loaded: {list(json_config.keys())}")
+        config.update(json_config)
 
-        logger.info(f"Config loaded: {list(config.keys())}")
-
-        # Parse resolution strings like "384*384"
-        res_keys = ['min_tokenizer_pixels', 'max_tokenizer_pixels', 'min_image_pixels', 'max_image_pixels']
-        parsed_resolutions = {}
-        for key in res_keys:
-            if isinstance(config.get(key), str):
-                parsed = parse_resolution(config[key])
-                config[key] = parsed['pixels']
-                parsed_resolutions[key] = parsed['dims']
-
-        # CLI args override config file
-        cli_overrides = {k: v for k, v in vars(args).items() if v is not None}
+        # CLI args override config file (only where non default values)
+        cli_overrides = {k: v for k, v in vars(args).items() if v is not None and v != defaults.get(k, None)}
         logger.info(f"CLI overrides: {list(cli_overrides.keys())}")
         config.update(cli_overrides)
-        logger.info(f"Final config keys: {list(config.keys())}")
-    else:
-        config = vars(args)
+
+    # Parse resolution strings like "384*384" (from config file or CLI)
+    res_keys = ["min_tokenizer_pixels", "max_tokenizer_pixels", "min_image_pixels", "max_image_pixels"]
+    parsed_resolutions = {}
+    original_resolutions = {}
+    for key in res_keys:
+        value = config.get(key)
+        if value is not None:
+            original_resolutions[key] = str(value)
+        if isinstance(value, str):
+            value = parse_resolution(value)
+        if isinstance(value, dict):
+            config[key] = value["pixels"]
+            parsed_resolutions[key] = value["dims"]
+
+    # Pretty print final config
+    logger.info("=" * 80)
+    logger.info("Final Configuration (after CLI overrides and parsing):")
+    logger.info("=" * 80)
+    for key, value in sorted(config.items()):
+        if key in res_keys and key in original_resolutions:
+            logger.info(f"  {key}: {value:,} pixels (from: {original_resolutions[key]})")
+        elif value is not None:
+            logger.info(f"  {key}: {value}")
+    logger.info("=" * 80)
 
     # Extract data format and remove non-pipeline keys
     data_format = args.data_format
-    for key in ['config', 'verbose', 'data_format']:
+    for key in ["config", "verbose", "data_format"]:
         config.pop(key, None)
 
     # Validate required parameters
-    required = ['tokenizer_path', 'output_dir', 'num_gpus', 'device']
-    if data_format == 'hf':
-        required += ['dataset_name', 'dataset_split', 'mode', 'num_shards']
+    required = ["tokenizer_path", "output_dir", "num_gpus", "device"]
+    if data_format == "hf":
+        required += ["dataset_name", "dataset_split", "mode", "num_shards"]
 
     missing = [k for k in required if not config.get(k)]
     if missing:
@@ -262,19 +250,19 @@ def main():
         sys.exit(1)
 
     try:
-        if data_format == 'hf':
+        if data_format == "hf":
             logger.info("Running HuggingFace dataset pipeline")
             # Remove None values and pass to pipeline
             pipeline_config = {k: v for k, v in config.items() if v is not None}
             # Add resolution dims for directory naming
-            if parsed_resolutions.get('min_image_pixels'):
-                pipeline_config['min_image_dims'] = parsed_resolutions['min_image_pixels']
-            if parsed_resolutions.get('max_image_pixels'):
-                pipeline_config['max_image_dims'] = parsed_resolutions['max_image_pixels']
+            if parsed_resolutions.get("min_image_pixels"):
+                pipeline_config["min_image_dims"] = parsed_resolutions["min_image_pixels"]
+            if parsed_resolutions.get("max_image_pixels"):
+                pipeline_config["max_image_dims"] = parsed_resolutions["max_image_pixels"]
             pipeline = HFDatasetPipeline(**pipeline_config)
             result = pipeline.run()
 
-        elif data_format == 'wds':
+        elif data_format == "wds":
             logger.error("WebDataset pipeline not yet implemented")
             sys.exit(1)
             # TODO: Implement WebDataset pipeline
@@ -292,6 +280,7 @@ def main():
     except Exception as e:
         logger.error(f"Pipeline failed: {e}")
         import traceback
+
         traceback.print_exc()
         sys.exit(1)
 

@@ -115,7 +115,6 @@ class Worker(BaseTokenizerWorker):
         self.output_dir = output_dir
 
 
-
     def process_shard(self, shard_id: int, dataset_info: Dict, num_shards: int) -> Dict:
         """
         Process a complete shard and save to separate text/image files.
