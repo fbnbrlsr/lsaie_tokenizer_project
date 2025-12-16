@@ -6,6 +6,43 @@ Unified pipeline for tokenizing large-scale vision datasets with support for mul
 
 **Why this matters:** During inference, the model can predict tokens from any modality (text, vision, audio, etc.). The omni-tokenizer handles the unified token space, while modality-specific tokenizers (vision, audio) decode their respective tokens back to images, audio, etc. See [`utils/omni_tokenizer/README.md`](utils/omni_tokenizer/README.md) for creating omni-tokenizers.
 
+---
+
+## Pipeline Overview
+
+This pipeline implements **separate modality tokenized storage** for datasets, followed by a **stitching step** to merge them back into a unified multimodal format. The workflow is:
+
+1. **Build the omni-tokenizer** (once)
+2. **Tokenize the dataset** - produces separate `text/` and `image/` idx/bin files
+3. **Stitch back** - merge separate modality files into a single `multimodal/` output
+
+### Quick Start (3-Step Pipeline)
+
+```bash
+# Step 1: Build the omni-tokenizer (run once)
+python my_build_omni_tokenizer.py
+
+# Step 2: Tokenize with separate modality storage
+python vision_tokenization/tokenize.py hf \
+    --mode image_only \
+    --dataset-name laion/laion-high-resolution \
+    --dataset-split train[:10000] \
+    --tokenizer-path ../my_omni_tokenizer \
+    --output-dir ../my_tokenized_data_output \
+    --num-gpus 1 \
+    --num-shards 100 \
+    --device cuda \
+    --min-tokenizer-pixels "512*512" \
+    --max-tokenizer-pixels "1024*1024" \
+    --min-image-pixels "256*256" \
+    --max-image-pixels "2048*2048"
+
+# Step 3: Stitch back to create merged multimodal idx/bin files
+python vision_tokenization/pipelines/stitch_back.py
+```
+
+---
+
 ## Token Structure Format
 
 Images are tokenized into a structured sequence with special tokens marking boundaries and rows:
@@ -409,3 +446,157 @@ Workers pull shards dynamically from a shared queue, ensuring optimal GPU utiliz
 
 - **Omni-Tokenizer Creation**: See `utils/omni_tokenizer/README.md`
 - **Old WebDataset Pipeline**: See `README_OLD_WEBDATASET.md` (legacy)
+
+---
+
+## Detailed Pipeline Steps
+
+This section provides detailed instructions for the 3-step pipeline.
+
+### Step 1: Build the Omni-Tokenizer
+
+The omni-tokenizer extends a base text tokenizer (e.g., LLaVA) with vision tokens. Run this once before tokenizing any datasets.
+
+**Script:** [`my_build_omni_tokenizer.py`](../my_build_omni_tokenizer.py)
+
+```python
+# Configure these paths in my_build_omni_tokenizer.py:
+TEXT_TOKENIZER_PATH = "llava-hf/llava-1.5-7b-hf"
+OUTPUT_PATH = "/path/to/my_omni_tokenizer"
+VISION_TOKENIZER_PATH = 'BAAI/Emu3-VisionTokenizer'
+VISION_TOKENIZER = 'Emu3'
+```
+
+```bash
+# Run once to create the tokenizer
+python my_build_omni_tokenizer.py
+```
+
+**Output:** Creates a tokenizer directory with:
+
+- `tokenizer.json` - Main tokenizer file
+- `tokenizer_config.json` - Config with vocab sizes and vision tokenizer info
+- `added_tokens.json` - Special and vision tokens mapping
+- `special_tokens_map.json` - Special token definitions
+- `vision_token_mapping.json` - Vision token ID mappings
+
+### Step 2: Tokenize with Separate Modality Storage
+
+Tokenize the dataset into separate `text/` and `image/` subdirectories. This separation enables easy tokenizer switching without re-tokenizing images.
+
+**Script:** [`vision_tokenization/tokenize.py`](tokenize.py)
+
+```bash
+python vision_tokenization/tokenize.py hf \
+    --mode image_only \
+    --dataset-name laion/laion-high-resolution \
+    --dataset-split train[:10000] \
+    --tokenizer-path /path/to/my_omni_tokenizer \
+    --output-dir /path/to/my_tokenized_data \
+    --num-gpus 1 \
+    --num-shards 100 \
+    --device cuda \
+    --min-tokenizer-pixels "512*512" \
+    --max-tokenizer-pixels "1024*1024" \
+    --min-image-pixels "256*256" \
+    --max-image-pixels "2048*2048"
+```
+
+**Output Structure:**
+
+```
+my_tokenized_data/
+├── text/
+│   ├── rank_0_shard_0_100.bin
+│   ├── rank_0_shard_0_100.idx
+│   └── ...
+├── image/
+│   ├── rank_0_shard_0_100.bin
+│   ├── rank_0_shard_0_100.idx
+│   └── ...
+└── dataset_info.json
+```
+
+### Step 3: Stitch Back to Multimodal Format
+
+Merge the separate text and image token files into a unified multimodal format suitable for training.
+
+**Script:** [`vision_tokenization/pipelines/stitch_back.py`](pipelines/stitch_back.py)
+
+```python
+# Edit stitch_back.py to configure:
+results = stitch_shards(
+    output_dir='/path/to/my_tokenized_data/output_folder',
+    mode='image_only'  # or 'image2text', 'text2image', 'sft'
+)
+```
+
+```bash
+python vision_tokenization/pipelines/stitch_back.py
+```
+
+**Output:** Creates a `multimodal/` subdirectory with merged token files:
+
+```
+my_tokenized_data/
+├── text/
+├── image/
+├── multimodal/
+│   ├── rank_0_shard_0_100.bin
+│   ├── rank_0_shard_0_100.idx
+│   └── ...
+└── dataset_info.json
+```
+
+The `stitch_back.py` script provides two functions:
+
+- `stitch_shards()` - Merges text/image shards into multimodal shards (recommended)
+- `stich_together_tokens()` - Alternative function that batches samples into multimodal datasets
+
+---
+
+## New Utility Classes
+
+### IndexedDataset
+
+Class for reading tokenized data from `.bin/.idx` files.
+
+**Location:** [`vision_tokenization/pipelines/dataset.py`](pipelines/dataset.py)
+
+```python
+from vision_tokenization.pipelines.dataset import IndexedDataset
+
+# Load a tokenized shard
+dataset = IndexedDataset("/path/to/shard_prefix")  # without .bin/.idx extension
+
+# Access samples
+sample = dataset[0]  # Returns numpy array of token IDs
+print(f"Number of samples: {len(dataset)}")
+print(f"Sample token count: {len(sample)}")
+```
+
+### IO Utilities
+
+Low-level readers for index and binary files.
+
+**Location:** [`vision_tokenization/io_utils/readers.py`](io_utils/readers.py)
+
+- `IndexReader` - Reads `.idx` files (sequence lengths, pointers, document indices)
+- `MMapBinReader` - Memory-mapped reader for `.bin` files (efficient for large files)
+- `FileBinReader` - File-based reader for `.bin` files (lower memory usage)
+
+### DType Utilities
+
+Data type utilities for token storage.
+
+**Location:** [`vision_tokenization/utils/types.py`](utils/types.py)
+
+```python
+from vision_tokenization.utils.types import DType
+
+# Get optimal dtype for vocabulary size
+dtype = DType.optimal_dtype(vocab_size=128256)
+
+# Convert dtype code to numpy dtype
+dtype = DType.dtype_from_code(code)
+```
