@@ -124,6 +124,27 @@ python tokenize.py hf \
     --device cuda
 ```
 
+### Performance Benchmarking
+The benchmark tool (benchmark_pipeline.py) measures the I/O and processing speed (Tokens/sec) of two core operations (seperate and stitch). It automatically detects your input format to determine which tests to run:
+
+- **Unified Input (Flat Files):** If you provide a folder with flat .bin/.idx files, the script runs Separation → Stitching.
+
+1. Splits the unified files into text/image shards.
+
+2. Stitches them back together to measure reconstruction speed.
+
+- **Separated Input (text/ & image/ folders):** If you provide pre-separated data, the script runs Stitching Only.
+
+1. It merges the existing text/image shards into a unified format.
+
+```bash
+python benchmark_pipeline.py \
+    --data-dir /path/to/your/tokenized_data \
+    --mode sft \
+    --num-shards 5
+    --cleanup  # <--- Adds automatic cleanup
+```
+
 ## Supported Modes
 
 **Note**: Currently supports **single image** per sample. Multi-image interleaving is not yet supported.
