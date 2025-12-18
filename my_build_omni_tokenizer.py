@@ -103,6 +103,7 @@ def create_tokenizer(
     tokenizer_class = tokenizers[mode]
 
     if mode in ["image2text", "text2image"]:
+        # EMUImageTextPairTokenizer requires mode parameter
         return tokenizer_class(
             text_tokenizer_path=tokenizer_path,
             device=device,
@@ -110,13 +111,16 @@ def create_tokenizer(
             max_pixels=max_pixels,
             mode=mode
         )
-    else:
+    elif mode in ["image_only", "sft"]:
+        # EMUImageOnlyTokenizer and EMUSftTokenizer don't use mode parameter
         return tokenizer_class(
             text_tokenizer_path=tokenizer_path,
             device=device,
             min_pixels=min_pixels,
             max_pixels=max_pixels
         )
+    else:
+        raise ValueError(f"Unknown mode: {mode}. Supported modes: image_only, image2text, text2image, sft")
     
 
 if __name__ == "__main__":
@@ -125,10 +129,10 @@ if __name__ == "__main__":
 
     # Config
     TEXT_TOKENIZER_PATH = "llava-hf/llava-1.5-7b-hf"
-    OUTPUT_PATH = "/users/fbrulisauer/scratch/ApertusProject/lsaie_tokenizer_project/my_omni_tokenizer"
+    OUTPUT_PATH = "/users/alllau/scratch/ApertusProject/my_omni_tokenizer"
     VISION_TOKENIZER_PATH = 'BAAI/Emu3-VisionTokenizer'
     VISION_TOKENIZER = 'Emu3'
-    MODE = 'image_only'
+    MODE = 'sft'
     MAX_SAMPLES_TO_TOKENIZE = 5
     
     build_tok = True
