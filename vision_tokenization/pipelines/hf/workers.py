@@ -152,11 +152,15 @@ class Worker(BaseTokenizerWorker):
         # Create subdirectories for text and image
         text_dir = output_base / "text"
         image_dir = output_base / "image"
+        metadata_dir = output_base / "metadata"
 
         # Create directories (only text if not image_only mode)
         if self.mode != "image_only":
             text_dir.mkdir(parents=True, exist_ok=True)
         image_dir.mkdir(parents=True, exist_ok=True)
+        # Create metadata directory for SFT mode
+        if self.mode == "sft":
+            metadata_dir.mkdir(parents=True, exist_ok=True)
 
         # Create builders for both modalities
         dtype = DType.optimal_dtype(len(self.tokenizer.text_tokenizer))
@@ -183,6 +187,9 @@ class Worker(BaseTokenizerWorker):
             'skipped': 0,
             'resolution_skipped': 0
         }
+
+        # Collect per-sample metadata for SFT mode
+        shard_metadata = []
 
         for sample in shard:
             # Extract data
@@ -233,6 +240,15 @@ class Worker(BaseTokenizerWorker):
                 stats['samples'] += 1
                 stats['tokens'] += (len(text_tokens) if text_tokens is not None else 0) + len(image_tokens)
 
+                # Collect metadata for SFT mode
+                if self.mode == "sft" and metadata:
+                    shard_metadata.append({
+                        "idx": stats['samples'] - 1,
+                        "text_before_len": metadata.get("text_before_len", 0),
+                        "text_after_len": metadata.get("text_after_len", 0),
+                        "image_position": metadata.get("image_position", 0)
+                    })
+
             except Exception as e:
                 self.logger.warning(f"Failed to process sample: {e}")
                 stats['errors'] += 1
@@ -241,6 +257,13 @@ class Worker(BaseTokenizerWorker):
         if text_builder is not None:
             text_builder.finalize(str(text_dir / f"{shard_filename}.idx"))
         image_builder.finalize(str(image_dir / f"{shard_filename}.idx"))
+
+        # Write metadata file for SFT mode
+        if self.mode == "sft" and shard_metadata:
+            import json
+            metadata_path = metadata_dir / f"{shard_filename}_metadata.json"
+            with open(metadata_path, 'w') as f:
+                json.dump(shard_metadata, f)
 
         elapsed = time.time() - start_time
         self.logger.info(

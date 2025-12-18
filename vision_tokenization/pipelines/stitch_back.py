@@ -123,7 +123,12 @@ def stich_together_tokens(work_dir: str, mode: str, BATCH_SIZE: int = 1000):
                 raise NotImplementedError
             
             elif mode == "sft":
-                raise NotImplementedError
+                # SFT mode requires metadata for proper reconstruction
+                # Use stitch_shards() instead which supports metadata loading
+                raise NotImplementedError(
+                    "SFT mode is not supported in stich_together_tokens(). "
+                    "Use stitch_shards() instead, which supports metadata-based reconstruction."
+                )
 
             else:
                 raise ValueError(f"Mode '{mode}' is not a valid option.")
@@ -178,6 +183,7 @@ def stitch_shards(output_dir: str, mode: str) -> Dict[str, Any]:
     output_path = Path(output_dir)
     image_dir = output_path / "image"
     text_dir = output_path / "text"
+    metadata_dir = output_path / "metadata"
     multimodal_dir = output_path / "multimodal"
     multimodal_dir.mkdir(exist_ok=True, parents=True)
     
@@ -218,7 +224,18 @@ def stitch_shards(output_dir: str, mode: str) -> Dict[str, Any]:
     # Stitch each pair
     for i, (prefix, (text_idx_path, image_idx_path)) in enumerate(shard_files.items()):
         logger.info(f"Stitching {i+1}/{len(shard_files)}: {prefix}")
-        
+
+        # Load metadata for SFT mode
+        shard_metadata = []
+        if mode == "sft":
+            metadata_path = metadata_dir / f"{prefix}_metadata.json"
+            if metadata_path.exists():
+                with open(metadata_path, 'r') as f:
+                    shard_metadata = json.load(f)
+                logger.info(f"Loaded metadata for {len(shard_metadata)} samples")
+            else:
+                logger.warning(f"No metadata file for SFT shard {prefix}, using fallback (image + text)")
+
         # Load input datasets
         try:
             print("image_idx_path:", image_idx_path)
@@ -242,13 +259,30 @@ def stitch_shards(output_dir: str, mode: str) -> Dict[str, Any]:
             image_tokens = image_dataset.get(doc_idx)
             text_tokens = text_dataset.get(doc_idx) if text_dataset else None
 
-            # Start with image tokens (which include BOS/EOS/boundary markers)
-            combined_tokens = [t.item() for t in image_tokens]
-            
-            # Append text tokens if they exist (and are not an empty padding document)
-            if text_tokens is not None and len(text_tokens) > 0:
-                combined_tokens.extend([t.item() for t in text_tokens])
-            
+            if mode == "sft" and doc_idx < len(shard_metadata):
+                # SFT mode: Use metadata to reconstruct correct order
+                # Final sequence: text_before + image + text_after
+                meta = shard_metadata[doc_idx]
+                text_before_len = meta.get("text_before_len", 0)
+
+                # Split text tokens at the image insertion point
+                if text_tokens is not None and len(text_tokens) > 0:
+                    text_before = [t.item() for t in text_tokens[:text_before_len]]
+                    text_after = [t.item() for t in text_tokens[text_before_len:]]
+                else:
+                    text_before, text_after = [], []
+
+                # Reconstruct: text_before + image + text_after
+                combined_tokens = text_before + [t.item() for t in image_tokens] + text_after
+            else:
+                # Original logic for image_only, image2text modes
+                # Start with image tokens (which include BOS/EOS/boundary markers)
+                combined_tokens = [t.item() for t in image_tokens]
+
+                # Append text tokens if they exist (and are not an empty padding document)
+                if text_tokens is not None and len(text_tokens) > 0:
+                    combined_tokens.extend([t.item() for t in text_tokens])
+
             # Write the combined sequence
             multimodal_builder.add_document(combined_tokens, [len(combined_tokens)])
 
@@ -282,8 +316,8 @@ if __name__ == '__main__':
     #     └── rank_0_shard_0_100.idx
 
     results = stitch_shards(
-        output_dir='/users/fbrulisauer/scratch/ApertusProject/lsaie_tokenizer_project/my_tokenized_data_output/explanation_image2text', 
-        mode='image_only'
+        output_dir='/users/alllau/scratch/ApertusProject/my_tokenized_data/CoSyn_400k_chart_sft/256x256_2048x2048', 
+        mode='sft'
     )
     
     for k, v in results.items():

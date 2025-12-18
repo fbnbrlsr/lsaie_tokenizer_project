@@ -294,6 +294,25 @@ def create_base_tokenizer(
     print(f"Loading text tokenizer from {text_tokenizer_path}...")
     tokenizer = AutoTokenizer.from_pretrained(text_tokenizer_path, use_fast=True)
 
+    # Load chat_template from separate file if it exists and tokenizer doesn't have one
+    # HuggingFace stores chat templates in chat_template.json separately from tokenizer_config.json
+    if not getattr(tokenizer, 'chat_template', None):
+        try:
+            from huggingface_hub import hf_hub_download
+            chat_template_path = hf_hub_download(
+                repo_id=text_tokenizer_path,
+                filename="chat_template.json",
+                repo_type="model"
+            )
+            with open(chat_template_path, 'r') as f:
+                chat_template_data = json.load(f)
+            if 'chat_template' in chat_template_data:
+                tokenizer.chat_template = chat_template_data['chat_template']
+                print(f"  ✓ Loaded chat_template from chat_template.json")
+        except Exception as e:
+            # chat_template.json doesn't exist or couldn't be loaded - that's fine
+            print(f"  ℹ️  No chat_template.json found (this is optional)")
+
     # Store original info - capture base vocab BEFORE any modifications
     original_vocab_size = len(tokenizer.get_vocab())
     print(f"Original vocabulary size: {original_vocab_size:,}")

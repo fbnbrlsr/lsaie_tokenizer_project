@@ -183,13 +183,53 @@ class HFDatasetPipeline(BasePipeline):
         # Initialize Ray with GPU support
         if not ray.is_initialized():
             ray.init(
-                num_cpus=self.num_gpus + 2, 
+                num_cpus=self.num_gpus + 2,
                 num_gpus=self.num_gpus,
                 runtime_env={
                     "working_dir": ".",
-                    "py_modules": [
-                        "/users/fbrulisauer/scratch/ApertusProject/lsaie_tokenizer_project/vision_tokenization",
-                        "/users/fbrulisauer/scratch/ApertusProject/lsaie_tokenizer_project/Tokenizer"
+                    "excludes": [
+                        # Core dumps and large binary files
+                        "core_*",
+                        "core.*",
+                        "*.core",
+                        # Git internals (can be very large)
+                        ".git/",
+                        # Notebooks and outputs
+                        "*.ipynb",
+                        "notebook/",
+                        "notebooks/",
+                        # Cache directories
+                        "__pycache__/",
+                        "*.pyc",
+                        ".pytest_cache/",
+                        # Data directories (should not be uploaded)
+                        "data/",
+                        "output/",
+                        "outputs/",
+                        "*.bin",
+                        "*.idx",
+                        # Model weights and checkpoints
+                        "*.pt",
+                        "*.pth",
+                        "*.ckpt",
+                        "*.safetensors",
+                        # Other large files
+                        "*.tar",
+                        "*.tar.gz",
+                        "*.zip",
+                        "*.parquet",
+                        # Project-specific large directories
+                        "assets/",
+                        "my_omni_tokenizer/",
+                        "my_tokenized_data/",
+                        "my_tokenized_data_output/",
+                        # Images and media
+                        "*.png",
+                        "*.jpg",
+                        "*.jpeg",
+                        "*.gif",
+                        "*.mp4",
+                        "*.pdf",
                     ]
                 })
 

@@ -27,8 +27,8 @@ python vision_tokenization/tokenize.py hf \
     --mode image_only \
     --dataset-name laion/laion-high-resolution \
     --dataset-split train[:10000] \
-    --tokenizer-path ../my_omni_tokenizer \
-    --output-dir ../my_tokenized_data_output \
+    --tokenizer-path /path/to/my_omni_tokenizer \
+    --output-dir /path/to/my_tokenized_data \
     --num-gpus 1 \
     --num-shards 100 \
     --device cuda \
@@ -155,8 +155,32 @@ The pipeline stores **text and image tokens separately** in independent `.bin/.i
 
 For SFT mode, text tokens are split around the `<|image|>` placeholder:
 - Text before and after the image are concatenated into a single sequence
-- Metadata stores the split lengths for reconstruction during training
+- Metadata stores the split lengths (`text_before_len`, `text_after_len`, `image_position`) for reconstruction during stitching
 - This enables flexible positioning of images within conversations
+
+**SFT Output Structure:**
+```
+output_dir/
+├── text/
+│   └── rank_0_shard_0_100.bin/.idx
+├── image/
+│   └── rank_0_shard_0_100.bin/.idx
+├── metadata/                                    # SFT mode only
+│   └── rank_0_shard_0_100_metadata.json         # Per-sample metadata
+└── dataset_info.json
+```
+
+**Metadata JSON format:**
+```json
+[
+  {"idx": 0, "text_before_len": 50, "text_after_len": 150, "image_position": 50},
+  {"idx": 1, "text_before_len": 75, "text_after_len": 120, "image_position": 75}
+]
+```
+
+**SFT Stitching:** During stitching, metadata is used to reconstruct the correct token order:
+- `text_before_len` determines where to split text tokens
+- Final sequence: `text_before + image + text_after`
 
 ## Configuration Options
 
@@ -446,6 +470,7 @@ Workers pull shards dynamically from a shared queue, ensuring optimal GPU utiliz
 
 - **Omni-Tokenizer Creation**: See `utils/omni_tokenizer/README.md`
 - **Old WebDataset Pipeline**: See `README_OLD_WEBDATASET.md` (legacy)
+- **Image Size Analyzer**: See "Step 2: Tokenize with Separate Modality Storage" below
 
 ---
 
@@ -485,6 +510,33 @@ python my_build_omni_tokenizer.py
 Tokenize the dataset into separate `text/` and `image/` subdirectories. This separation enables easy tokenizer switching without re-tokenizing images.
 
 **Script:** [`vision_tokenization/tokenize.py`](tokenize.py)
+
+#### Finding Optimal Pixel Parameters
+
+Before tokenizing, use `check_min_max_pixels.py` to analyze your dataset's image sizes and get recommended parameters:
+
+```bash
+# Analyze dataset and get recommended parameters + ready-to-use command
+python vision_tokenization/check_min_max_pixels.py \
+    --dataset-name laion/laion-high-resolution \
+    --dataset-split "train[:1000]" \
+    --image-field image \
+    --mode image_only \
+    --tokenizer-path /path/to/my_omni_tokenizer \
+    --output-dir /path/to/my_tokenized_data
+
+# For datasets with multiple configs (e.g., FineVision)
+python vision_tokenization/check_min_max_pixels.py \
+    --dataset-name HuggingFaceM4/FineVision \
+    --config-name CoSyn_400k_chart \
+    --dataset-split "train[:1000]" \
+    --image-field images \
+    --mode sft
+```
+
+This outputs image size statistics and a complete tokenization command you can copy-paste.
+
+#### Running Tokenization
 
 ```bash
 python vision_tokenization/tokenize.py hf \
@@ -552,6 +604,26 @@ The `stitch_back.py` script provides two functions:
 
 - `stitch_shards()` - Merges text/image shards into multimodal shards (recommended)
 - `stich_together_tokens()` - Alternative function that batches samples into multimodal datasets
+
+#### Mode-Specific Stitching Behavior
+
+| Mode | Stitching Order | Metadata Used |
+|------|-----------------|---------------|
+| `image_only` | `[image]` | No |
+| `image2text` | `[image] + [text]` | No |
+| `text2image` | `[image] + [text]` (fallback) | No |
+| `sft` | `[text_before] + [image] + [text_after]` | Yes - uses `metadata/` JSON files |
+
+**SFT Stitching Details:**
+
+For SFT mode, `stitch_shards()` reads per-sample metadata from `metadata/*.json` files to correctly reconstruct token order:
+
+1. Loads `metadata/{shard}_metadata.json` for each shard
+2. For each sample, reads `text_before_len` from metadata
+3. Splits text tokens: `text_before = text[:text_before_len]`, `text_after = text[text_before_len:]`
+4. Reconstructs: `combined = text_before + image + text_after`
+
+If metadata file is missing, falls back to simple `[image] + [text]` concatenation with a warning.
 
 ---
 

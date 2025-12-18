@@ -28,7 +28,27 @@ class EMUSftTokenizer(EMUImageOnlyTokenizer):
         self.executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="TokenizerPool")
 
         # Cache the image token ID for faster lookup
-        self.image_token_id = self.text_tokenizer.convert_tokens_to_ids("<|image|>")
+        # Detect which image token format the chat template uses by checking formatted output
+        # LLaVA uses "<image>", while other models use "<|image|>"
+        test_messages = [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": "test"}]}]
+        try:
+            test_output = self.text_tokenizer.apply_chat_template(test_messages, tokenize=False)
+            if "<|image|>" in test_output:
+                self.image_token_id = self.text_tokenizer.convert_tokens_to_ids("<|image|>")
+                print(f"  Using image token: <|image|> (ID {self.image_token_id})")
+            elif "<image>" in test_output:
+                self.image_token_id = self.text_tokenizer.convert_tokens_to_ids("<image>")
+                print(f"  Using LLaVA-style image token: <image> (ID {self.image_token_id})")
+            else:
+                # Fallback: try both tokens
+                self.image_token_id = self.text_tokenizer.convert_tokens_to_ids("<|image|>")
+                if self.image_token_id == self.text_tokenizer.unk_token_id:
+                    self.image_token_id = self.text_tokenizer.convert_tokens_to_ids("<image>")
+                print(f"  Warning: Could not detect image token format, using ID {self.image_token_id}")
+        except Exception as e:
+            # Fallback if chat template fails
+            self.image_token_id = self.text_tokenizer.convert_tokens_to_ids("<image>")
+            print(f"  Fallback to <image> token (ID {self.image_token_id})")
 
     def _add_special_tokens(self, tokens: torch.Tensor) -> torch.Tensor:
         """
@@ -91,6 +111,22 @@ class EMUSftTokenizer(EMUImageOnlyTokenizer):
             """CPU thread for text tokenization."""
             # Force text operations to CPU
             with torch.cuda.device(-1):  # Use CPU
+                # First, get the formatted text to debug
+                formatted_text = self.text_tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=False,
+                )
+
+                # Check if image placeholder exists in the formatted text
+                # LLaVA uses "<image>", check for both formats
+                has_image_placeholder = "<image>" in formatted_text or "<|image|>" in formatted_text
+                if not has_image_placeholder:
+                    print(f"Warning: No image placeholder found in formatted text")
+                    print(f"  First 200 chars: {formatted_text[:200]}")
+                    # Return early with 0 images
+                    return torch.tensor([], dtype=torch.long), 0, None
+
                 # Apply chat template and tokenize in one step
                 text_tokens = self.text_tokenizer.apply_chat_template(
                     messages,
@@ -111,13 +147,16 @@ class EMUSftTokenizer(EMUImageOnlyTokenizer):
                     image_position = image_mask.nonzero(as_tuple=True)[0][0].item()
                 else:
                     image_position = None
+                    if num_images == 0:
+                        print(f"Warning: image_token_id={self.image_token_id} not found in tokens")
+                        print(f"  Token sample: {text_tokens[:20].tolist()}")
 
                 return text_tokens, num_images, image_position
 
         # Check if image exists before starting parallel processing
         if image is None:
             print("Warning: No image provided to tokenize_conversation")
-            return torch.tensor([], dtype=torch.long)
+            return None
 
         # Submit both tasks in parallel
         text_future = self.executor.submit(tokenize_text_cpu)
@@ -129,7 +168,7 @@ class EMUSftTokenizer(EMUImageOnlyTokenizer):
         if num_images != 1:
             # Only single image samples are supported
             print(f"Warning: Found {num_images} image placeholders, expected 1. Skipping sample.")
-            return torch.tensor([], dtype=torch.long)
+            return None
 
         image_tokens = image_future.result()
 
