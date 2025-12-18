@@ -693,3 +693,23 @@ dtype = DType.optimal_dtype(vocab_size=128256)
 # Convert dtype code to numpy dtype
 dtype = DType.dtype_from_code(code)
 ```
+
+
+# Get raw tokens, stitch back together using new tokenizer, verify output
+
+```bash
+python get_raw_tokens.py \
+    --input_dir /path/to/tokenized/data \
+    --output_dir /path/to/save/raw/tokens \
+    --old_tokenizer_path /path/to/original/tokenizer
+
+python stitch_back.py \
+    --raw_data_dir /path/to/save/raw/tokens \
+    --output_dir /path/to/save/regenerated/tokens \
+    --new_tokenizer_path /path/to/new/tokenizer
+
+python verify_stitching.py \
+    --data_prefix /path/to/save/regenerated/tokens/rank_* \
+    --tokenizer_path /path/to/new/tokenizer \
+    --num_samples 3
+```
