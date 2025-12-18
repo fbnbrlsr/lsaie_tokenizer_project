@@ -138,7 +138,7 @@ The benchmark tool (benchmark_pipeline.py) measures the I/O and processing speed
 1. It merges the existing text/image shards into a unified format.
 
 ```bash
-python benchmark_pipeline.py \
+python benchmark_reconstruction.py \
     --data-dir /path/to/your/tokenized_data \
     --mode sft \
     --num-shards 5
