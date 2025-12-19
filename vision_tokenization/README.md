@@ -12,34 +12,97 @@ Unified pipeline for tokenizing large-scale vision datasets with support for mul
 
 This pipeline implements **separate modality tokenized storage** for datasets, followed by a **stitching step** to merge them back into a unified multimodal format. The workflow is:
 
-1. **Build the omni-tokenizer** (once)
-2. **Tokenize the dataset** - produces separate `text/` and `image/` idx/bin files
-3. **Stitch back** - merge separate modality files into a single `multimodal/` output
+1. **Tokenize the dataset** - produces separate `text/` to .jsonl and `image/` to idx/bin files
+2. **Stitch back** - merge separate modality files into a single multimodal output idx/bin file
 
 ### Quick Start (3-Step Pipeline)
 
+
+# Step 1: Convert your existing, tokenizer-specific data (e.g., Llama-3 formatted) back into raw tokens (universal codebook indices and strings).
+Arguments:
+- --input_dir: Path to the folder containing your existing rank_*.bin and .idx files.
+- --output_dir: Where to save the raw data.
+- --old_tokenizer_path: The path to the tokenizer that was originally used to create the input data (needed to correctly identify and strip special tokens).
+
 ```bash
-# Step 1: Build the omni-tokenizer (run once)
-python my_build_omni_tokenizer.py
-
-# Step 2: Tokenize with separate modality storage
-python vision_tokenization/tokenize.py hf \
-    --mode image_only \
-    --dataset-name laion/laion-high-resolution \
-    --dataset-split train[:10000] \
-    --tokenizer-path /path/to/my_omni_tokenizer \
-    --output-dir /path/to/my_tokenized_data \
-    --num-gpus 1 \
-    --num-shards 100 \
-    --device cuda \
-    --min-tokenizer-pixels "512*512" \
-    --max-tokenizer-pixels "1024*1024" \
-    --min-image-pixels "256*256" \
-    --max-image-pixels "2048*2048"
-
-# Step 3: Stitch back to create merged multimodal idx/bin files
-python vision_tokenization/pipelines/stitch_back.py
+python get_raw_tokens.py \
+    --input_dir /capstor/.../tokenized_sft/dvqa_sft \
+    --output_dir ./dvqa_raw_ \
+    --old_tokenizer_path /iopsstor/.../llama3_emu3_tokenizer
 ```
+
+Output Structure: The script will create:
+- ./dvqa_raw/raw_images/: Contains rank_*.bin (pure integers 0-32k).
+- ./dvqa_raw/raw_texts/: Contains rank_*.jsonl (raw text strings).
+
+# Step 2: Take the raw tokens and encapsulate them into a final dataset using a new tokenizer.
+Arguments:
+- --raw_data_dir: The folder containing raw_images (and raw_texts or text depending on mode).
+- --output_dir: Where to save the final training-ready data.
+- --new_tokenizer_path: Path to the target tokenizer you want to use now.
+- --mode: Choose between sft, image2text, or image_only.
+
+```bash
+# Image Only mode
+python stitch_back.py \
+    --raw_data_dir ./dvqa_raw \
+    --output_dir ./final_image_only \
+    --new_tokenizer_path /path/to/new/tokenizer \
+    --mode image_only
+```
+
+```bash
+# Image2Text mode
+python stitch_back.py \
+    --raw_data_dir ./dvqa_raw \
+    --output_dir ./final_image2text \
+    --new_tokenizer_path /path/to/new/tokenizer \
+    --mode image2text
+```
+
+```bash
+# SFT mode
+python stitch_back.py \
+    --raw_data_dir ./dvqa_raw \
+    --output_dir ./final_sft \
+    --new_tokenizer_path /path/to/new/tokenizer \
+    --mode sft
+```
+
+Expected Output:
+For a shard named rank_000, you will get:
+- rank_000.bin
+- rank_000.idx
+
+# Step 3: Validates the integrity of the "stitched" multimodal datasets. It performs two critical checks
+1. Text Decoding: verifying that text tokens can be read back into human-readable strings.
+2. Visual Reconstruction: verifying that image tokens can be decoded back into actual PNG images (proving that pixel alignment and offsets are correct).
+
+Arguments:
+- --data_prefix	The full path to your stitched dataset file excluding the .bin or .idx extension.	
+- --tokenizer_path	Path to the huggingface tokenizer directory used during the stitching phase.	
+- --mode	The data mode to verify. Currently supports sft and image2text.
+- --num_samples	(Optional) The number of items to verify from the dataset. Default is 3.	
+
+```bash
+python verify_stitching.py \
+    --data_prefix /path/to/final_sft_output/rank_000 \
+    --tokenizer_path /path/to/new/tokenizer \
+    --mode image2text \
+    --num_samples 3
+```
+
+```bash
+python verify_stitching.py \
+    --data_prefix /path/to/final_sft_output/rank_000 \
+    --tokenizer_path /path/to/new/tokenizer \
+    --mode sft \
+    --num_samples 3
+```
+
+Expected Output:
+- Console: You will see "Number of tokens" and the decoded caption text (e.g., "A cat sitting on a mat").
+- File: It will save verified_sample_0.png, the first num_samples images, visualized.
 
 ---
 
@@ -695,21 +758,3 @@ dtype = DType.dtype_from_code(code)
 ```
 
 
-# Get raw tokens, stitch back together using new tokenizer, verify output
-
-```bash
-python get_raw_tokens.py \
-    --input_dir /path/to/tokenized/data \
-    --output_dir /path/to/save/raw/tokens \
-    --old_tokenizer_path /path/to/original/tokenizer
-
-python stitch_back.py \
-    --raw_data_dir /path/to/save/raw/tokens \
-    --output_dir /path/to/save/regenerated/tokens \
-    --new_tokenizer_path /path/to/new/tokenizer
-
-python verify_stitching.py \
-    --data_prefix /path/to/save/regenerated/tokens/rank_* \
-    --tokenizer_path /path/to/new/tokenizer \
-    --num_samples 3
-```
