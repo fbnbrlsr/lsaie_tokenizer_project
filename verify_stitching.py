@@ -158,7 +158,7 @@ def main():
                 print(full_text)
                 
             # B. Decode Image
-            output_file = f"/users/ohatipoglu/scratch/lsaie_tokenizer_project/verified_sample_{i}.png"
+            output_file = f"/users/$USER/scratch/lsaie_tokenizer_project/verified_sample_{i}.png"
             reconstruct_image(tokens, text_tokenizer, vision_decoder, output_file)
     
     elif args.mode == "image2text":
@@ -185,17 +185,10 @@ def main():
             print("Number of tokens:", len(tokens))
             print("Decoded text part:", decoded_tokens.split("</s>")[1])
             
-            output_file = f"/users/fbrulisauer/scratch/ApertusProject/lsaie_tokenizer_project/verified_sample_{i}.png"
+            output_file = f"/users/$USER/scratch/ApertusProject/lsaie_tokenizer_project/verified_sample_{i}.png"
             reconstruct_image(tokens, text_tokenizer, vision_decoder, output_file)
     
 
 if __name__ == "__main__":
     main()
     
-"""
-python verify_stitching.py \
-    --data_prefix /users/fbrulisauer/scratch/ApertusProject/lsaie_tokenizer_project/my_tokenized_data_output/explanation_image2text/multimodal/rank_0_shard_0_2 \
-    --tokenizer_path /users/fbrulisauer/scratch/ApertusProject/lsaie_tokenizer_project/my_omni_tokenizer \
-    --num_samples 3 \
-    --mode image2text
-"""
