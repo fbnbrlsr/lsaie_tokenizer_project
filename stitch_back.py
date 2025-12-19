@@ -92,27 +92,10 @@ def stitch_shard_image2text(text_path, img_path, output_path, tokenizer, encapsu
         img_seq = img_ds[i]
         final_seq = np.zeros(len(img_seq))
         
-        print("===============================")
-        print("text_seq before:")
-        print(text_seq[:20])
-        print(text_seq[-20:])
-        print("--------------------------")
-        print("img_seq before:")
-        print(img_seq[:20])
-        print(img_seq[-20:])
-        
         # Special token indices
         img_start_idx = np.where(img_seq == encapsulator.img_start)[0][0]
         img_tokens_start_idx = np.where(img_seq == encapsulator.img_tok_start)[0][0]
         img_end_idx = np.where(img_seq == encapsulator.img_end)[0][0]
-        
-        print("img_start_idx", img_start_idx)
-        print("img_tokens_start_idx", img_tokens_start_idx)
-        print("img_end_idx", img_end_idx)
-        print("len text_seq:", len(text_seq))
-        print("len img_seq:", len(img_seq))
-        print("len final_seq:", len(final_seq))
-        print("encapsulator.offset:", encapsulator.offset)
         
         
         # Add offset everywhere except at special tokens
@@ -133,14 +116,6 @@ def stitch_shard_image2text(text_path, img_path, output_path, tokenizer, encapsu
         
         # Append text tokens
         final_seq = np.concatenate([final_seq, text_seq])
-        
-        
-        print("final_seq:")
-        print(final_seq[:20])
-        print(final_seq[-20:])
-        
-        print("DECODED:")
-        print(tokenizer.decode(final_seq))
         
         
         builder.add_document(final_seq, [len(final_seq)])
