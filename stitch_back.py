@@ -43,7 +43,7 @@ class LateBindingEncapsulator:
         res.extend([self.eof, self.img_end])
         return res
 
-def stitch_shard(raw_img_path, raw_text_path, output_path, tokenizer, encapsulator):
+def stitch_shard_sft(raw_img_path, raw_text_path, output_path, tokenizer, encapsulator):
     # Load Raw Images
     img_ds = IndexedDataset(str(raw_img_path).replace('.bin', ''))
     
@@ -78,12 +78,83 @@ def stitch_shard(raw_img_path, raw_text_path, output_path, tokenizer, encapsulat
             builder.add_document(np.array(combined, dtype=np.int32), [len(combined)])
             
     builder.finalize(str(output_path).replace('.bin', '.idx'))
+    
+def stitch_shard_image2text(text_path, img_path, output_path, tokenizer, encapsulator):
+    
+    text_ds = IndexedDataset(str(text_path).replace('.bin', ''))
+    img_ds = IndexedDataset(str(img_path).replace('.bin', ''))
+    
+    builder = IndexedDatasetBuilder(str(output_path))
+    
+    for i in range(len(img_ds)):
+        
+        text_seq = text_ds[i]
+        img_seq = img_ds[i]
+        final_seq = np.zeros(len(img_seq))
+        
+        print("===============================")
+        print("text_seq before:")
+        print(text_seq[:20])
+        print(text_seq[-20:])
+        print("--------------------------")
+        print("img_seq before:")
+        print(img_seq[:20])
+        print(img_seq[-20:])
+        
+        # Special token indices
+        img_start_idx = np.where(img_seq == encapsulator.img_start)[0][0]
+        img_tokens_start_idx = np.where(img_seq == encapsulator.img_tok_start)[0][0]
+        img_end_idx = np.where(img_seq == encapsulator.img_end)[0][0]
+        
+        print("img_start_idx", img_start_idx)
+        print("img_tokens_start_idx", img_tokens_start_idx)
+        print("img_end_idx", img_end_idx)
+        print("len text_seq:", len(text_seq))
+        print("len img_seq:", len(img_seq))
+        print("len final_seq:", len(final_seq))
+        print("encapsulator.offset:", encapsulator.offset)
+        
+        
+        # Add offset everywhere except at special tokens
+        final_seq = np.where(
+            (img_seq == 1) | (img_seq == 2) |
+            (img_seq == encapsulator.img_start) |
+            (img_seq == encapsulator.img_end) |
+            (img_seq == encapsulator.img_tok_start) |
+            (img_seq == encapsulator.eol) |
+            (img_seq == encapsulator.eof),
+            img_seq, 
+            img_seq + encapsulator.offset
+        )
+        
+        # Remove offset at dimension encoding
+        final_seq[img_start_idx+1:img_tokens_start_idx] -= encapsulator.offset
+        
+        
+        # Append text tokens
+        final_seq = np.concatenate([final_seq, text_seq])
+        
+        
+        print("final_seq:")
+        print(final_seq[:20])
+        print(final_seq[-20:])
+        
+        print("DECODED:")
+        print(tokenizer.decode(final_seq))
+        
+        
+        builder.add_document(final_seq, [len(final_seq)])
+        
+    builder.finalize(str(output_path).replace('.bin', '.idx'))
+    
+    
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--raw_data_dir", type=str, required=True, help="Folder with raw_images and raw_texts")
     parser.add_argument("--output_dir", type=str, required=True)
     parser.add_argument("--new_tokenizer_path", type=str, required=True)
+    parser.add_argument("--mode", type=str, required=True)
     args = parser.parse_args()
 
     print(f"Loading tokenizer from {args.new_tokenizer_path}...")
@@ -92,25 +163,54 @@ def main():
     
     os.makedirs(args.output_dir, exist_ok=True)
     
-    # Process each recycled shard
-    raw_img_dir = Path(args.raw_data_dir) / "raw_images"
-    raw_text_dir = Path(args.raw_data_dir) / "raw_texts"
-    
-    # Find bin files
-    bin_files = sorted(list(raw_img_dir.glob("*.bin")))
-    if not bin_files:
-        print(f"No bin files found in {raw_img_dir}")
-        return
-
-    for bin_file in bin_files:
-        shard_name = bin_file.stem
-        text_file = raw_text_dir / f"{shard_name}.jsonl"
-        output_file = Path(args.output_dir) / f"{shard_name}.bin"
+    if args.mode == "sft":
+        # Process each recycled shard
+        raw_img_dir = Path(args.raw_data_dir) / "raw_images"
+        raw_text_dir = Path(args.raw_data_dir) / "raw_texts"
         
-        if text_file.exists():
-            stitch_shard(bin_file, text_file, output_file, tokenizer, encapsulator)
-        else:
-            print(f"Warning: No matching text file for {shard_name}")
+        # Find bin files
+        bin_files = sorted(list(raw_img_dir.glob("*.bin")))
+        if not bin_files:
+            print(f"No bin files found in {raw_img_dir}")
+            return
+
+        for bin_file in bin_files:
+            shard_name = bin_file.stem
+            text_file = raw_text_dir / f"{shard_name}.jsonl"
+            output_file = Path(args.output_dir) / f"{shard_name}.bin"
+            
+            if text_file.exists():
+                stitch_shard_sft(bin_file, text_file, output_file, tokenizer, encapsulator)
+            else:
+                print(f"Warning: No matching text file for {shard_name}")
+                
+    elif args.mode == "image2text":
+        
+        img_dir = Path(args.raw_data_dir) / "image"
+        text_dir = Path(args.raw_data_dir) / "text"
+        bin_files = sorted(list(img_dir.glob("*.bin")))
+        
+        for bin_file in bin_files:
+            shard_name = bin_file.stem
+            text_file = text_dir / f"{shard_name}.bin"
+            img_file = img_dir / f"{shard_name}.bin"
+            output_file = Path(args.output_dir) / f"{shard_name}.bin"
+            
+            if text_file.exists():
+                stitch_shard_image2text(text_file, img_file, output_file, tokenizer, encapsulator)
+            else:
+                print(f"Warning: No matching text file for {shard_name}")
+
+
 
 if __name__ == "__main__":
     main()
+    
+    
+"""
+python stitch_back.py \
+    --raw_data_dir /users/fbrulisauer/scratch/ApertusProject/lsaie_tokenizer_project/my_tokenized_data_output/explanation_image2text \
+    --output_dir /users/fbrulisauer/scratch/ApertusProject/lsaie_tokenizer_project/my_tokenized_data_output/explanation_image2text/multimodal \
+    --new_tokenizer_path /users/fbrulisauer/scratch/ApertusProject/lsaie_tokenizer_project/my_omni_tokenizer \
+    --mode image2text
+"""

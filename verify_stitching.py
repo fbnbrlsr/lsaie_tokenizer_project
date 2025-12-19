@@ -6,6 +6,7 @@ import torch
 import numpy as np
 from PIL import Image
 from transformers import AutoTokenizer
+from vision_tokenization.vokenizers.emu.image_text_pair import EMUImageTextPairTokenizer
 from vision_tokenization.pipelines.indexed_dataset_megatron import IndexedDatasetBuilder
 from vision_tokenization.pipelines.dataset import IndexedDataset
 
@@ -118,45 +119,83 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data_prefix", type=str, required=True, help="Path to stitched .bin file (no extension)")
     parser.add_argument("--tokenizer_path", type=str, required=True, help="Path to text tokenizer")
+    parser.add_argument("--mode", type=str, required=True)
     parser.add_argument("--num_samples", type=int, default=3, help="How many samples to verify")
     args = parser.parse_args()
 
-    # 1. Load Text Tokenizer
-    print(f"Loading Text Tokenizer: {args.tokenizer_path}")
-    text_tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_path, trust_remote_code=True)
-    
-    # 2. Load Vision Decoder
-    print("Loading Vision Decoder (Emu3)...")
-    # Using standard resolution params for decoding
-    vision_decoder = Emu3VisionTokenizer(
-        device="cuda",
-        min_pixels=256*256, 
-        max_pixels=1024*1024
-    )
-    
-    # 3. Load Dataset
-    print(f"Loading Dataset: {args.data_prefix}")
-    ds = IndexedDataset(args.data_prefix)
-    
-    # 4. Process Samples
-    for i in range(min(len(ds), args.num_samples)):
-        print(f"\n{'='*20} Sample {i} {'='*20}")
-        tokens = ds[i]
+    if args.mode == "sft":
+        # 1. Load Text Tokenizer
+        print(f"Loading Text Tokenizer: {args.tokenizer_path}")
+        text_tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_path, trust_remote_code=True)
         
-        # A. Print Text
-        # Decode everything to find text parts
-        full_text = text_tokenizer.decode(tokens, skip_special_tokens=False)
-        # Split by image start/end for cleaner reading if possible, else just print full
-        print("--- Text Content ---")
-        # Truncate if massive
-        if len(full_text) > 500:
-            print(full_text[:250] + "\n...[IMAGE BLOCK]...\n" + full_text[-250:])
-        else:
-            print(full_text)
+        # 2. Load Vision Decoder
+        print("Loading Vision Decoder (Emu3)...")
+        # Using standard resolution params for decoding
+        vision_decoder = Emu3VisionTokenizer(
+            device="cuda",
+            min_pixels=256*256, 
+            max_pixels=1024*1024
+        )
+        
+        # 3. Load Dataset
+        print(f"Loading Dataset: {args.data_prefix}")
+        ds = IndexedDataset(args.data_prefix)
+        
+        # 4. Process Samples
+        for i in range(min(len(ds), args.num_samples)):
+            print(f"\n{'='*20} Sample {i} {'='*20}")
+            tokens = ds[i]
             
-        # B. Decode Image
-        output_file = f"/users/ohatipoglu/scratch/lsaie_tokenizer_project/verified_sample_{i}.png"
-        reconstruct_image(tokens, text_tokenizer, vision_decoder, output_file)
+            # A. Print Text
+            # Decode everything to find text parts
+            full_text = text_tokenizer.decode(tokens, skip_special_tokens=False)
+            # Split by image start/end for cleaner reading if possible, else just print full
+            print("--- Text Content ---")
+            # Truncate if massive
+            if len(full_text) > 500:
+                print(full_text[:250] + "\n...[IMAGE BLOCK]...\n" + full_text[-250:])
+            else:
+                print(full_text)
+                
+            # B. Decode Image
+            output_file = f"/users/ohatipoglu/scratch/lsaie_tokenizer_project/verified_sample_{i}.png"
+            reconstruct_image(tokens, text_tokenizer, vision_decoder, output_file)
+    
+    elif args.mode == "image2text":
+        
+        # Load dataset
+        print(f"Loading Dataset: {args.data_prefix}")
+        ds = IndexedDataset(args.data_prefix)
+
+        # Load tokenizer
+        print(f"Loading tokenizer: {args.tokenizer_path}")
+        text_tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_path, trust_remote_code=True)
+        vision_decoder = Emu3VisionTokenizer(
+            device="cuda",
+            min_pixels=256*256, 
+            max_pixels=1024*1024
+        )
+        
+        for i in range(len(ds)):
+            
+            tokens = ds[i]
+            decoded_tokens = text_tokenizer.decode(tokens)
+            
+            print(f"--- sample {i} ---")
+            print("Number of tokens:", len(tokens))
+            print("Decoded text part:", decoded_tokens.split("</s>")[1])
+            
+            output_file = f"/users/fbrulisauer/scratch/ApertusProject/lsaie_tokenizer_project/verified_sample_{i}.png"
+            reconstruct_image(tokens, text_tokenizer, vision_decoder, output_file)
+    
 
 if __name__ == "__main__":
     main()
+    
+"""
+python verify_stitching.py \
+    --data_prefix /users/fbrulisauer/scratch/ApertusProject/lsaie_tokenizer_project/my_tokenized_data_output/explanation_image2text/multimodal/rank_0_shard_0_2 \
+    --tokenizer_path /users/fbrulisauer/scratch/ApertusProject/lsaie_tokenizer_project/my_omni_tokenizer \
+    --num_samples 3 \
+    --mode image2text
+"""
