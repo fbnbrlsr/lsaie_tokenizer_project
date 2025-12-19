@@ -106,6 +106,36 @@ Expected Output:
 
 ---
 
+1. **Build the omni-tokenizer** (once)
+2. **Tokenize the dataset** - produces separate `text/` and `image/` idx/bin files
+3. **Stitch back** - merge separate modality files into a single `multimodal/` output
+
+### Quick Start (3-Step Pipeline)
+
+```bash
+# Step 1: Build the omni-tokenizer (run once)
+python my_build_omni_tokenizer.py
+
+# Step 2: Tokenize with separate modality storage
+python vision_tokenization/tokenize.py hf \
+    --mode image_only \
+    --dataset-name laion/laion-high-resolution \
+    --dataset-split train[:10000] \
+    --tokenizer-path /path/to/my_omni_tokenizer \
+    --output-dir /path/to/my_tokenized_data \
+    --num-gpus 1 \
+    --num-shards 100 \
+    --device cuda \
+    --min-tokenizer-pixels "512*512" \
+    --max-tokenizer-pixels "1024*1024" \
+    --min-image-pixels "256*256" \
+    --max-image-pixels "2048*2048"
+
+# Step 3: Stitch back to create merged multimodal idx/bin files
+python vision_tokenization/pipelines/stitch_back.py
+```
+
+
 ## Token Structure Format
 
 Images are tokenized into a structured sequence with special tokens marking boundaries and rows:
